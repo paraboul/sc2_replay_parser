@@ -7,10 +7,14 @@
 
 #define MPQ_MAGIC 0x1B51504D
 
+
+#define INIT_STRING(str) do { str.val = NULL; str.length = 0; } while(0)
+
 typedef struct _sc2string {
     char *val;
     unsigned int length;
 } sc2string;
+
 
 typedef struct _mpqsc2
 {

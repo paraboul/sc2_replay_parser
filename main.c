@@ -11,7 +11,7 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     mpq_archive_s *a;
     MPQSC2 *init;
     
-    if (libmpq__archive_open(&a, "meta.SC2Replay", -1) != 0) {
+    if (libmpq__archive_open(&a, filename, -1) != 0) {
         return NULL;
     }
     
@@ -23,17 +23,34 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     
 }
 
+int64_t _libmpq_sc2_parse_vlf(unsigned char *data, uint64_t size)
+{
+    uint64_t pos;
+    int64_t result = 0;
+    
+    for (pos = 0; pos < size; pos++) {
+        result |= (data[pos] & 0x7F) << (pos * 7);
+        if (!(data[pos] & 0x80)) {
+            return (result >> 1) * (result & 0x01 ? -1 : 1);
+        }
+    }
+    
+    return 0;
+}
+
 uint64_t _libmpq_sc2_parse_player_details(unsigned char *data, uint64_t size,
     SC2_PLAYERS_DETAILS **player)
 {
+    int reg = 0;
     uint64_t pos;
     SC2_PLAYERS_DETAILS_STATE state = PS_READ_START;
     
     *player = malloc(sizeof(SC2_PLAYERS_DETAILS));
-    (*player)->short_name.val = NULL;
-    (*player)->full_name.val = NULL;
-    (*player)->race.val = NULL;
     
+    INIT_STRING((*player)->short_name);
+    INIT_STRING((*player)->full_name);
+    INIT_STRING((*player)->race);
+
     for (pos = 0; pos < size; pos++) {
         switch(state) {
             case PS_READ_START:
@@ -43,13 +60,25 @@ uint64_t _libmpq_sc2_parse_player_details(unsigned char *data, uint64_t size,
                 break;
             case PS_READ_SHORTNAME_LENGTH:
                 (*player)->short_name.length = (uint8_t)data[pos] / 2;
+                
                 if ((*player)->short_name.length > 64) {
                     goto error;
                 }
-                (*player)->short_name.val = malloc((*player)->short_name.length);
+                
+                (*player)->short_name.val = 
+                                    malloc((*player)->short_name.length + 1);
+                reg = 0;
                 state = PS_READ_SHORTNAME;
+                
                 break;
             case PS_READ_SHORTNAME:
+                (*player)->short_name.val[reg++] = (char)data[pos];
+                
+                if (reg == (*player)->short_name.length) {
+                    (*player)->short_name.val[reg] = '\0';
+                    printf("Player 1 : %s\n", (*player)->short_name.val);
+                    return 0;
+                }
                 break;
             default:
                 break;
@@ -97,6 +126,7 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
                                 size-pos, &player);
                                 
                     CHECK_OVERFLOW();
+                    return NULL;
                 }
             }
             break;
@@ -138,6 +168,15 @@ int main(int argc, char **argv)
     MPQSC2 *scr;
     unsigned char *content;
     int64_t size = 0;
+    
+    unsigned char lefu[4];
+    
+    lefu[0] = 0x82;
+    lefu[1] = 0x01;
+    lefu[2] = 0x80;
+    lefu[3] = 0x10;
+    
+    printf("Res : %d\n", _libmpq_sc2_parse_vlf(lefu, 2));
     
     if ((scr = libmpq_sc2_init("1v1.sc2replay")) == NULL) {
         printf("Init failed\n");
