@@ -23,19 +23,167 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     
 }
 
-int64_t _libmpq_sc2_parse_vlf(unsigned char *data, uint64_t size)
+int64_t _libmpq_sc2_parse_vlf(unsigned char *data, uint64_t size, int64_t *res)
 {
     uint64_t pos;
     int64_t result = 0;
+    *res = -1;
     
     for (pos = 0; pos < size; pos++) {
         result |= (data[pos] & 0x7F) << (pos * 7);
         if (!(data[pos] & 0x80)) {
-            return (result >> 1) * (result & 0x01 ? -1 : 1);
+            *res = (result >> 1) * (result & 0x01 ? -1 : 1);
+            return pos+1;
         }
     }
+    return pos;
+}
+
+sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
+{
+    sc2_data_array_t *array = malloc(sizeof(*array));
+    sc2_data_t *sc2_data = malloc(sizeof(sc2_data_t) * size);
     
-    return 0;
+    array->ptr       = sc2_data;
+    array->length    = size;
+    array->pos       = 0;
+    
+    return array;
+}
+
+sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size)
+{
+    #define CHECK_OVERFLOW(add) if (pos+add > size) return NULL;
+    
+    uint64_t pos = 0;
+
+    sc2_data_t *new_val = malloc(sizeof(*new_val));
+        
+    switch(data[pos++]) {
+        case 0x02: /* Byte string */
+        {
+            int64_t length;
+            
+            printf("Parse String\n");
+            
+            new_val->type = SC2_DATA_STRING;
+            
+            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                    &length)) == -1) {
+                return NULL;
+            }
+            CHECK_OVERFLOW(length);
+            
+            new_val->val.str.val    = (char *)&data[pos];
+            new_val->val.str.length = length;
+            
+            return new_val;
+        }
+        case 0x04: /* Array */
+        {
+            int64_t nelements;
+            sc2_data_array_t *new_array;
+            CHECK_OVERFLOW(2);
+            pos += 2;
+            
+            new_val->type = SC2_DATA_ARRAY;
+            
+            printf("Parse Array\n");
+            
+            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                        &nelements)) == -1 || nelements > 2048) {
+
+                return NULL;
+            }
+            new_array = _libmpq_sc2_init_data_array(nelements);
+            
+            new_val->val.ptr = new_array;
+
+            printf("Found array of %d elems %x\n", (uint32_t)nelements, data[pos]);
+            
+            while (nelements--) {
+                sc2_data_t *ret;
+                
+                if ((ret = _libmpq_sc2_parse_serialzed_data(&data[pos], 
+                                size-pos)) == NULL) {
+                    return NULL;
+                }
+                
+                new_array[new_array->pos++].ptr = ret;                
+            }
+            
+            return new_val;
+        }
+        case 0x05: /* Key-value */
+        {
+            int64_t nelements;
+            sc2_data_array_t *new_array;
+            
+            new_val->type = SC2_DATA_KEYVAL;
+            
+            printf("Parse Key value\n");
+            
+            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                        &nelements)) == -1 || nelements > 2048) {
+                return NULL;
+            }
+            printf("Found Keyval of %d elems\n", (uint32_t)nelements);
+            
+            new_array = _libmpq_sc2_init_data_array(nelements);
+
+            new_val->val.ptr = new_array;
+            
+            while (nelements--) {
+                int64_t key;
+                sc2_data_t *ret;
+                            
+                if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                            &key)) == -1) {
+
+                    return NULL;
+                }
+
+                if ((ret = _libmpq_sc2_parse_serialzed_data(&data[pos], 
+                                size-pos)) == NULL) {
+                    return NULL;
+                }
+                
+                new_array[new_array->pos++].ptr = ret;
+                
+            }
+            return new_val;     
+        }
+        case 0x06: /* Single byte int */
+            new_val->type = SC2_DATA_INT;
+            new_val->val.integer = data[pos];
+            
+            return new_val;
+        case 0x07: /* 4 byte int */
+            CHECK_OVERFLOW(3);
+            new_val->type = SC2_DATA_INT;
+            new_val->val.integer =  data[pos] | 
+                                    data[pos+1] << 8 | 
+                                    data[pos+2] << 16 | 
+                                    data[pos+3] << 24;
+            return new_val;
+        case 0x09: /* VLF */
+        {
+            int64_t vlf;
+            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                        &vlf)) == -1) {
+                return NULL;
+            }            
+            new_val->type = SC2_DATA_INT;
+            new_val->val.integer = vlf;
+            
+            return new_val;
+        }
+        default:
+            break;
+    }
+
+    
+    return NULL;
 }
 
 uint64_t _libmpq_sc2_parse_player_details(unsigned char *data, uint64_t size,
@@ -100,8 +248,12 @@ error:
 SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data, 
     uint64_t size)
 {
-    #define CHECK_OVERFLOW() if (pos > size) return NULL
+    //#define CHECK_OVERFLOW() if (pos > size) return NULL
     uint64_t pos;
+    
+    _libmpq_sc2_parse_serialzed_data(data, size);
+    
+    return NULL;
     
     SC2_REPLAY_DETAILS *details = malloc(sizeof(*details));
     
@@ -125,7 +277,7 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
                     pos += _libmpq_sc2_parse_player_details(&data[pos], 
                                 size-pos, &player);
                                 
-                    CHECK_OVERFLOW();
+                    //CHECK_OVERFLOW();
                     return NULL;
                 }
             }
@@ -136,7 +288,8 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
     return details;
 }
 
-unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename, libmpq__off_t *size)
+unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
+    libmpq__off_t *size)
 {
     uint32_t filenumber = 0;
     libmpq__off_t filesize = 0, transferred = 0;
@@ -168,15 +321,7 @@ int main(int argc, char **argv)
     MPQSC2 *scr;
     unsigned char *content;
     int64_t size = 0;
-    
-    unsigned char lefu[4];
-    
-    lefu[0] = 0x82;
-    lefu[1] = 0x01;
-    lefu[2] = 0x80;
-    lefu[3] = 0x10;
-    
-    printf("Res : %d\n", _libmpq_sc2_parse_vlf(lefu, 2));
+
     
     if ((scr = libmpq_sc2_init("1v1.sc2replay")) == NULL) {
         printf("Init failed\n");
@@ -187,7 +332,7 @@ int main(int argc, char **argv)
         printf("Failed to read subfile\n");
         return 0;
     }
-    
+
     _libmpq_sc2_parse_replay_details(content, size);
 
 	return 1;

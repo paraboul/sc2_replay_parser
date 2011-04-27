@@ -39,6 +39,7 @@ typedef struct _sc2_player_defails
     
 } SC2_PLAYERS_DETAILS;
 
+
 typedef struct _sc2_replay_details
 {
     uint8_t nplayers;
@@ -49,6 +50,33 @@ typedef struct _sc2_replay_details
     
     SC2_PLAYERS_DETAILS *players;
 } SC2_REPLAY_DETAILS;
+
+typedef enum {
+    SC2_DATA_STRING,
+    SC2_DATA_ARRAY,
+    SC2_DATA_KEYVAL,
+    SC2_DATA_INT
+} sc2_data_e;
+
+typedef struct _sc2_data
+{
+    sc2_data_e type;
+    
+    union {
+        sc2string str;
+        void *ptr;
+        uint64_t integer;
+    } val;
+    
+} sc2_data_t;
+
+typedef struct _sc2_data_array
+{
+    uint32_t length;
+    uint32_t pos;
+    sc2_data_t *ptr;
+    
+} sc2_data_array_t;
 
 #ifndef MIN
     #define MIN(val1, val2) ((val1 > val2) ? (val2) : (val1))
