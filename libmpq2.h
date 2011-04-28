@@ -23,33 +23,11 @@ typedef struct _mpqsc2
 } MPQSC2;
 
 typedef enum {
-    PS_READ_START,
-    PS_READ_SHORTNAME_LENGTH,
-    PS_READ_SHORTNAME
-    
-} SC2_PLAYERS_DETAILS_STATE;
-
-typedef struct _sc2_player_defails
-{
-    sc2string short_name;
-    sc2string full_name;
-    sc2string race;
-    
-    struct _sc2_player_defails *next;
-    
-} SC2_PLAYERS_DETAILS;
-
-
-typedef struct _sc2_replay_details
-{
-    uint8_t nplayers;
-    
-    char *map_name;
-    char *minimap_filename;
-    char *map_path;
-    
-    SC2_PLAYERS_DETAILS *players;
-} SC2_REPLAY_DETAILS;
+    EVENT_1,
+    EVENT_2,
+    EVENT_MSG,
+    EVENT_END
+} sc2_event_e;
 
 typedef enum {
     SC2_DATA_STRING,
@@ -57,6 +35,15 @@ typedef enum {
     SC2_DATA_KEYVAL,
     SC2_DATA_INT
 } sc2_data_e;
+
+typedef struct _sc2_events
+{
+    sc2_data_e type;
+    uint8_t player_id;
+    
+    sc2string msg;
+    int64_t ts;
+} sc2_events_t;
 
 typedef struct _sc2_data
 {

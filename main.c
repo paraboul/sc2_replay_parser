@@ -130,7 +130,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
             
             new_val->val.ptr = new_array;
             
-            PRINTTAB("Array(%d) {\n", nelements);
+            PRINTTAB("Array(%lld) {\n", nelements);
             spaced++;
             
             while (nelements--) {
@@ -164,7 +164,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
 
             new_val->val.ptr = new_array;
             
-            PRINTTAB("Keyval(%d) {\n", nelements);
+            PRINTTAB("Keyval(%lld) {\n", nelements);
             spaced++;
             while (nelements--) {
                 int64_t key;
@@ -217,7 +217,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
             new_val->type = SC2_DATA_INT;
             new_val->val.integer = vlf;
             
-            PRINTTAB("Found vlf %d\n", vlf);
+            PRINTTAB("Found vlf %lld\n", vlf);
             
             return new_val;
         }
@@ -232,7 +232,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
 }
 
 
-SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data, 
+char *_libmpq_sc2_parse_replay_details(unsigned char *data, 
     uint64_t size)
 {
     //#define CHECK_OVERFLOW() if (pos > size) return NULL
@@ -245,30 +245,43 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
 }
 
 
-void _libmpq_sc2_parse_message_events(unsigned char *data, uint64_t size)
+sc2_events_t *_libmpq_sc2_parse_message_events(unsigned char *data, uint64_t size)
 {
-    uint64_t pos = 0; 
 
+    uint64_t pos = 0;
+    int nevents;
+    int events_size = 128;
+    
+    sc2_events_t *events = malloc(sizeof(*events) * events_size);
+    
     while (pos < size) {
         int64_t ts;
         int flag;
         
+        if (nevents > events_size) {
+            events_size *= 2;
+            events = realloc(events, sizeof(*events) * events_size);
+        }
         pos += _libmpq_sc2_parse_timestamp(&data[pos], size, &ts);
+        
+        events[nevents].ts = ts;
+        events[nevents].player_id = data[pos] & 0x0F;
+
         pos += 1;
         
         flag = data[pos++];
         
         if (flag == 0x83) {
-            printf("Event 1\n");
+            events[nevents].type = EVENT_1;
             pos += 8;
         } else if (flag == 0x80) {
-            printf("Event 2\n");
+            events[nevents].type = EVENT_2;
             pos += 4;
         } else if (!(flag & 0x80)) {
             int length;
-            char msg[512];
-            memset(msg, '\0', 512);
 
+            events[nevents].type = EVENT_MSG;
+            
             length = (uint8_t)data[pos];
          
             if (flag & 0x08) {
@@ -276,18 +289,23 @@ void _libmpq_sc2_parse_message_events(unsigned char *data, uint64_t size)
             } else if (flag & 0x10) {
                 length += 128;
             }
+            
+            events[nevents].msg.val = (char *)&data[pos+1];
+            events[nevents].msg.length = length;
 
-            memcpy(msg, &data[pos+1], length);
             pos += length+1;
-            
-            printf("Message : %s\n", msg);
-            
+
         } else {
-            printf("Le fu\n");
+            free(events);
+            return NULL;
         }
+        
+        nevents++;
         
     }
     
+    events[nevents].type = EVENT_END;
+    return events;
 }
 
 unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
@@ -341,7 +359,7 @@ int main(int argc, char **argv)
         printf("Failed to read subfile\n");
         return 0;
     }
-    printf("Start : %d\n", size);
+
     _libmpq_sc2_parse_message_events(content, size);
 
 	return 1;
