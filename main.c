@@ -46,6 +46,24 @@ int64_t _libmpq_sc2_parse_vlf(unsigned char *data, uint64_t size, int64_t *res)
     return pos;
 }
 
+int64_t _libmpq_sc2_parse_timestamp(unsigned char *data, uint64_t size,
+    int64_t *res)
+{
+    uint8_t n = 0, extra = 0;
+    *res = 0;   
+    
+    extra = data[0] & 0x03;
+    
+    *res = data[0] >> 2;
+    
+    for (n = 0; n < extra; n++) {
+        *res <<= 8;
+        *res |= data[n+1];  
+    }
+    
+    return extra+1;
+}
+
 sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
 {
     sc2_data_array_t *array = malloc(sizeof(*array));
@@ -119,7 +137,6 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
                 sc2_data_t *ret;
                 if ((ret = _libmpq_sc2_parse_serialzed_data(data, 
                                 size, pos)) == NULL) {
-                    printf("FAILED 3\n");
                     return NULL;
                 }
                 new_array[new_array->pos++].ptr = ret;                
@@ -155,13 +172,11 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
                             
                 if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                             &key)) == -1) {
-                    printf("FAILED\n");
                     return NULL;
                 }
 
                 if ((ret = _libmpq_sc2_parse_serialzed_data(data, 
                                 size, pos)) == NULL) {
-                    printf("FAILED 2\n");
                     return NULL;
                 }
                 
@@ -208,6 +223,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
         }
         default:
             PRINTTAB("Unknow data %x\n", data[(*pos)-1]);
+            
             break;
     }
 
@@ -215,64 +231,6 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
     return NULL;
 }
 
-uint64_t _libmpq_sc2_parse_player_details(unsigned char *data, uint64_t size,
-    SC2_PLAYERS_DETAILS **player)
-{
-    int reg = 0;
-    uint64_t pos;
-    SC2_PLAYERS_DETAILS_STATE state = PS_READ_START;
-    
-    *player = malloc(sizeof(SC2_PLAYERS_DETAILS));
-    
-    INIT_STRING((*player)->short_name);
-    INIT_STRING((*player)->full_name);
-    INIT_STRING((*player)->race);
-
-    for (pos = 0; pos < size; pos++) {
-        switch(state) {
-            case PS_READ_START:
-                if (pos == 3) {
-                    state = PS_READ_SHORTNAME_LENGTH;
-                }
-                break;
-            case PS_READ_SHORTNAME_LENGTH:
-                (*player)->short_name.length = (uint8_t)data[pos] / 2;
-                
-                if ((*player)->short_name.length > 64) {
-                    goto error;
-                }
-                
-                (*player)->short_name.val = 
-                                    malloc((*player)->short_name.length + 1);
-                reg = 0;
-                state = PS_READ_SHORTNAME;
-                
-                break;
-            case PS_READ_SHORTNAME:
-                (*player)->short_name.val[reg++] = (char)data[pos];
-                
-                if (reg == (*player)->short_name.length) {
-                    (*player)->short_name.val[reg] = '\0';
-                    printf("Player 1 : %s\n", (*player)->short_name.val);
-                    return 0;
-                }
-                break;
-            default:
-                break;
-        }
-    }
-    
-    return pos;
-    
-error:
-    free((*player)->short_name.val);
-    free((*player)->full_name.val);
-    free((*player)->race.val);
-    
-    free(*player);
-    
-    return 0;
-}
 
 SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data, 
     uint64_t size)
@@ -283,38 +241,53 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
     _libmpq_sc2_parse_serialzed_data(data, size, &pos);
     
     return NULL;
-    
-    SC2_REPLAY_DETAILS *details = malloc(sizeof(*details));
-    
-    details->nplayers           = 0;
-    details->map_name           = NULL;
-    details->minimap_filename   = NULL;
-    details->map_path           = NULL;
-    
-    for (pos = 0; pos < size; pos++) {
-        switch(pos) {
-            case 6:
-                details->nplayers = (uint8_t)data[pos] / 2;
-                break;
-            case 7:
-            {
-                uint8_t pstruct;
 
-                for (pstruct = 0; pstruct < 16; pstruct++) {
-                    SC2_PLAYERS_DETAILS *player;
-                    
-                    pos += _libmpq_sc2_parse_player_details(&data[pos], 
-                                size-pos, &player);
-                                
-                    //CHECK_OVERFLOW();
-                    return NULL;
-                }
+}
+
+
+void _libmpq_sc2_parse_message_events(unsigned char *data, uint64_t size)
+{
+    uint64_t pos = 0; 
+
+    while (pos < size) {
+        int64_t ts;
+        int flag;
+        
+        pos += _libmpq_sc2_parse_timestamp(&data[pos], size, &ts);
+        pos += 1;
+        
+        flag = data[pos++];
+        
+        if (flag == 0x83) {
+            printf("Event 1\n");
+            pos += 8;
+        } else if (flag == 0x80) {
+            printf("Event 2\n");
+            pos += 4;
+        } else if (!(flag & 0x80)) {
+            int length;
+            char msg[512];
+            memset(msg, '\0', 512);
+
+            length = (uint8_t)data[pos];
+         
+            if (flag & 0x08) {
+                length += 64;
+            } else if (flag & 0x10) {
+                length += 128;
             }
-            break;
+
+            memcpy(msg, &data[pos+1], length);
+            pos += length+1;
+            
+            printf("Message : %s\n", msg);
+            
+        } else {
+            printf("Le fu\n");
         }
+        
     }
     
-    return details;
 }
 
 unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
@@ -352,17 +325,24 @@ int main(int argc, char **argv)
     int64_t size = 0;
 
     
-    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
+    if ((scr = libmpq_sc2_init("talk.sc2replay")) == NULL) {
         printf("Init failed\n");
         return 0;
     }
 
-    if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
+   /* if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
 
-    _libmpq_sc2_parse_replay_details(content, size);
+    _libmpq_sc2_parse_replay_details(content, size);*/
+    
+    if ((content = libmpq_sc2_readfile(scr, "replay.message.events", &size)) == NULL) {
+        printf("Failed to read subfile\n");
+        return 0;
+    }
+    printf("Start : %d\n", size);
+    _libmpq_sc2_parse_message_events(content, size);
 
 	return 1;
 }
