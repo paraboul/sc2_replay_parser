@@ -6,6 +6,13 @@
 #include <libmpq/mpq.h>
 #include "libmpq2.h"
 
+static int spaced = 0;
+
+#define PRINTTAB(format, var)   for (x = 0; x < spaced; x++) { \
+                            printf("\t"); \
+                        } \
+                        printf(format, var)
+
 MPQSC2 *libmpq_sc2_init(const char *filename)
 {
     mpq_archive_s *a;
@@ -51,31 +58,39 @@ sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
     return array;
 }
 
-sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size)
+sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size, 
+    uint64_t *pos)
 {
-    #define CHECK_OVERFLOW(add) if (pos+add > size) return NULL;
-    
-    uint64_t pos = 0;
+    #define CHECK_OVERFLOW(add) if (*pos+add > size) return NULL;
 
     sc2_data_t *new_val = malloc(sizeof(*new_val));
-        
-    switch(data[pos++]) {
+    
+    int x;
+
+    switch(data[(*pos)++]) {
         case 0x02: /* Byte string */
         {
             int64_t length;
+            char tmp[256];
             
-            printf("Parse String\n");
+            memset(tmp, '\0', 256);
             
             new_val->type = SC2_DATA_STRING;
             
-            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+            if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                     &length)) == -1) {
                 return NULL;
             }
             CHECK_OVERFLOW(length);
             
-            new_val->val.str.val    = (char *)&data[pos];
+            new_val->val.str.val    = (char *)&data[*pos];
             new_val->val.str.length = length;
+            
+            *pos += length;
+            
+            memcpy(tmp, new_val->val.str.val, length);
+            
+            PRINTTAB("String : %s\n", tmp);
             
             return new_val;
         }
@@ -84,13 +99,11 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size)
             int64_t nelements;
             sc2_data_array_t *new_array;
             CHECK_OVERFLOW(2);
-            pos += 2;
+            *pos += 2;
             
             new_val->type = SC2_DATA_ARRAY;
-            
-            printf("Parse Array\n");
-            
-            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+
+            if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                         &nelements)) == -1 || nelements > 2048) {
 
                 return NULL;
@@ -98,20 +111,23 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size)
             new_array = _libmpq_sc2_init_data_array(nelements);
             
             new_val->val.ptr = new_array;
-
-            printf("Found array of %d elems %x\n", (uint32_t)nelements, data[pos]);
+            
+            PRINTTAB("Array(%d) {\n", nelements);
+            spaced++;
             
             while (nelements--) {
                 sc2_data_t *ret;
-                
-                if ((ret = _libmpq_sc2_parse_serialzed_data(&data[pos], 
-                                size-pos)) == NULL) {
+                if ((ret = _libmpq_sc2_parse_serialzed_data(data, 
+                                size, pos)) == NULL) {
+                    printf("FAILED 3\n");
                     return NULL;
                 }
-                
                 new_array[new_array->pos++].ptr = ret;                
             }
+            spaced--;
             
+            PRINTTAB("}%c", '\n');
+
             return new_val;
         }
         case 0x05: /* Key-value */
@@ -120,65 +136,78 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size)
             sc2_data_array_t *new_array;
             
             new_val->type = SC2_DATA_KEYVAL;
+
             
-            printf("Parse Key value\n");
-            
-            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+            if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                         &nelements)) == -1 || nelements > 2048) {
                 return NULL;
             }
-            printf("Found Keyval of %d elems\n", (uint32_t)nelements);
             
             new_array = _libmpq_sc2_init_data_array(nelements);
 
             new_val->val.ptr = new_array;
             
+            PRINTTAB("Keyval(%d) {\n", nelements);
+            spaced++;
             while (nelements--) {
                 int64_t key;
                 sc2_data_t *ret;
                             
-                if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+                if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                             &key)) == -1) {
-
+                    printf("FAILED\n");
                     return NULL;
                 }
 
-                if ((ret = _libmpq_sc2_parse_serialzed_data(&data[pos], 
-                                size-pos)) == NULL) {
+                if ((ret = _libmpq_sc2_parse_serialzed_data(data, 
+                                size, pos)) == NULL) {
+                    printf("FAILED 2\n");
                     return NULL;
                 }
                 
                 new_array[new_array->pos++].ptr = ret;
                 
             }
+            spaced--;
+            PRINTTAB("}%c", '\n');
+        
             return new_val;     
         }
         case 0x06: /* Single byte int */
-            new_val->type = SC2_DATA_INT;
-            new_val->val.integer = data[pos];
             
+            new_val->type = SC2_DATA_INT;
+            new_val->val.integer = (uint8_t)data[*pos];
+            PRINTTAB("(int) %d\n", (uint8_t)new_val->val.integer);
+            *pos = *pos+1;
             return new_val;
         case 0x07: /* 4 byte int */
+            
             CHECK_OVERFLOW(3);
             new_val->type = SC2_DATA_INT;
-            new_val->val.integer =  data[pos] | 
-                                    data[pos+1] << 8 | 
-                                    data[pos+2] << 16 | 
-                                    data[pos+3] << 24;
+            new_val->val.integer =  data[*pos] | 
+                                    data[*pos+1] << 8 | 
+                                    data[*pos+2] << 16 | 
+                                    data[*pos+3] << 24;
+            
+            *pos += 4;
+            PRINTTAB("(bigint) %lld\n", new_val->val.integer);
             return new_val;
         case 0x09: /* VLF */
         {
             int64_t vlf;
-            if ((pos += _libmpq_sc2_parse_vlf(&data[pos], size-pos, 
+            if ((*pos += _libmpq_sc2_parse_vlf(&data[*pos], size-*pos, 
                         &vlf)) == -1) {
                 return NULL;
             }            
             new_val->type = SC2_DATA_INT;
             new_val->val.integer = vlf;
             
+            PRINTTAB("Found vlf %d\n", vlf);
+            
             return new_val;
         }
         default:
+            PRINTTAB("Unknow data %x\n", data[(*pos)-1]);
             break;
     }
 
@@ -249,9 +278,9 @@ SC2_REPLAY_DETAILS *_libmpq_sc2_parse_replay_details(unsigned char *data,
     uint64_t size)
 {
     //#define CHECK_OVERFLOW() if (pos > size) return NULL
-    uint64_t pos;
+    uint64_t pos = 0;
     
-    _libmpq_sc2_parse_serialzed_data(data, size);
+    _libmpq_sc2_parse_serialzed_data(data, size, &pos);
     
     return NULL;
     
@@ -323,7 +352,7 @@ int main(int argc, char **argv)
     int64_t size = 0;
 
     
-    if ((scr = libmpq_sc2_init("1v1.sc2replay")) == NULL) {
+    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
         printf("Init failed\n");
         return 0;
     }
