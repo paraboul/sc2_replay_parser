@@ -320,7 +320,7 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
         
         pos += add;
         iii++;
-        if (iii == 7) return;
+        if (iii == 8) return;
         
         printf("Added : %lld\n", add);
         
@@ -347,6 +347,18 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                 break;
             case 0x01:
                 switch(event_code) {
+                    case 0x0B:
+                    case 0x1B:
+                    case 0x2B:
+                    case 0x3B:
+                    case 0x4B:
+                    case 0x5B:
+                    case 0x6B:
+                    case 0x7B:
+                    case 0x8B:
+                    case 0x9B:
+                        printf("Ability event\n");
+                        break;
                     case 0x0C:
                     case 0x1C:
                     case 0x2C:
@@ -359,8 +371,9 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     case 0x9C:
                     case 0xAC:
                     {
-                        uint8_t deselect, prevbyte, bitmask, tmp;
-                        uint16_t num_unit_type, i;
+                        uint8_t deselect, prevbyte, bitmask, tmp, byte;
+                        uint16_t num_unit_type, i, num_unit;
+                        int j;
                         
                         pos++; /* event flag */
                         deselect = data[pos++];
@@ -384,12 +397,12 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                             num_unit_type = tmp;
                         }
                         
-                        printf("Unit : %d\n", num_unit_type);
+                        printf("Select Unit : %d\n", num_unit_type);
                         
                         for (i = 0; i < num_unit_type; i++) {
-                            int j, unit_type_id = 0;
+                            int unit_type_id = 0, unit_type_count = 0;
+
                             for (j = 0; j < 3; j++) {
-                                uint8_t byte;
                                 prevbyte = tmp;
                                 tmp = data[pos++];
                                 if (bitmask > 0) {
@@ -397,10 +410,48 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                                 } else {
                                     byte = tmp;
                                 }
-                                unit_type_id = byte << ((2 - j )* 8) | unit_type_id; 
-                                printf("Type : %d\n", unit_type_id);
+                                unit_type_id = byte << ((2 - j) * 8) | unit_type_id; 
+                                
                                 
                             }
+                            prevbyte = tmp;
+                            tmp = data[pos++];
+                            if (bitmask > 0) {
+                                unit_type_count = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
+                            } else {
+                                unit_type_count = tmp;
+                            }
+                            printf("Type : %d\n", unit_type_id);
+                            printf("Count : %d\n", unit_type_count);
+                            
+                        }
+                        prevbyte = tmp;
+                        tmp = data[pos++];
+                        
+                        if (bitmask > 0) {
+                            num_unit = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
+                        } else {
+                            num_unit = tmp;
+                        }
+                        
+                        printf("Num : %d\n", num_unit);
+                        for (i = 0; i < num_unit; i++) {
+                            int unit_id = 0;
+                            
+                            for (j = 0; j < 4; j++) {
+                                prevbyte = tmp;
+                                tmp = data[pos++];
+                                
+                                if (bitmask > 0) {
+                                    byte = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
+                                } else {
+                                    byte = tmp;
+                                }
+                                if (j < 2) {
+                                    unit_id = (byte << ((1 - j) * 8)) | unit_id;
+                                }
+                            }
+                            printf("Unit id : %d\n", unit_id);
                         }
                         
                         break;
