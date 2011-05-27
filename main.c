@@ -50,7 +50,7 @@ int64_t _libmpq_sc2_parse_timestamp(unsigned char *data, uint64_t size,
     int64_t *res)
 {
     uint8_t n = 0, extra = 0;
-    *res = 0;   
+    *res = 0;
     
     extra = data[0] & 0x03;
     
@@ -244,7 +244,6 @@ char *_libmpq_sc2_parse_replay_details(unsigned char *data,
 
 }
 
-
 sc2_events_t *_libmpq_sc2_parse_message_events(unsigned char *data, uint64_t size)
 {
 
@@ -308,6 +307,167 @@ sc2_events_t *_libmpq_sc2_parse_message_events(unsigned char *data, uint64_t siz
     return events;
 }
 
+void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
+{
+    uint64_t pos = 0;
+    printf("Size : %lld\n", size);
+    int iii = 0;
+    while (pos < size) {
+        int64_t ts;
+        uint8_t event_type, player_id, event_code;
+        uint64_t add;
+        add = _libmpq_sc2_parse_timestamp(&data[pos], size, &ts);
+        
+        pos += add;
+        iii++;
+        if (iii == 7) return;
+        
+        printf("Added : %lld\n", add);
+        
+        event_type  = data[pos] >> 5;
+        player_id   = data[pos] & 15;
+        event_code  = data[++pos];
+        
+        pos++;
+        
+        printf("==== Event ====\nTimestamp : %lld\nEvent Type : %.2x\nPlayer id : %d\nEvent code : %.2x\n", ts, event_type, player_id, event_code);
+        
+        switch(event_type) {
+            case 0x00:
+                switch(event_code) {
+                    case 0x2C:
+                    case 0x0C:
+                    case 0x0B:
+                        break;
+                    case 0x05:
+                        break;
+                    default:
+                        break;
+                }
+                break;
+            case 0x01:
+                switch(event_code) {
+                    case 0x0C:
+                    case 0x1C:
+                    case 0x2C:
+                    case 0x3C:
+                    case 0x4C:
+                    case 0x5C:
+                    case 0x6C:
+                    case 0x7C:
+                    case 0x8C:
+                    case 0x9C:
+                    case 0xAC:
+                    {
+                        uint8_t deselect, prevbyte, bitmask, tmp;
+                        uint16_t num_unit_type, i;
+                        
+                        pos++; /* event flag */
+                        deselect = data[pos++];
+                        
+                        if ((deselect & 0x03) == 1) {
+                        
+                        } else if ((deselect & 0x03) == 2 || (deselect & 0x03) == 3) {
+                        
+                        } else if ((deselect & 0x03) == 0) {
+                            bitmask = 3;
+                            tmp = deselect;
+                        }
+                        
+                        prevbyte = tmp;
+                        
+                        tmp = data[pos++];
+                        
+                        if (bitmask > 0) {
+                            num_unit_type = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
+                        } else {
+                            num_unit_type = tmp;
+                        }
+                        
+                        printf("Unit : %d\n", num_unit_type);
+                        
+                        for (i = 0; i < num_unit_type; i++) {
+                            int j, unit_type_id = 0;
+                            for (j = 0; j < 3; j++) {
+                                uint8_t byte;
+                                prevbyte = tmp;
+                                tmp = data[pos++];
+                                if (bitmask > 0) {
+                                    byte = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
+                                } else {
+                                    byte = tmp;
+                                }
+                                unit_type_id = byte << ((2 - j )* 8) | unit_type_id; 
+                                printf("Type : %d\n", unit_type_id);
+                                
+                            }
+                        }
+                        
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                
+                break;
+            case 0x02:
+                break;
+            case 0x03:
+                if ((event_code & 0x0F) == 0x01) {
+                    uint8_t cur;
+
+                    pos += 3;
+                    
+                    cur = data[pos++];
+                    printf("Cur : %.2x\n", cur & 0x70);
+                    switch((cur & 0x70)) {
+                        case 0x10:
+                        case 0x30:
+                        case 0x50:
+                            pos++;
+                            cur = data[pos++];
+                        case 0x20:
+                            if ((cur & 0x20) > 0) {
+                                pos++;
+                                cur = data[pos++];
+                                printf("wut\n");
+                            }
+                            if ((cur & 0x40) == 0) break;
+                            printf("then\n");
+                        case 0x40:
+                            pos += 2;
+                            break;
+                        default:
+                            break;
+                    }
+
+                    break;
+                }
+                switch(event_code) {
+                    case 0x08:
+                        printf("there %.2x\n\n\n\n", data[++pos]);
+                        
+                        break;
+                    default:
+                        printf("Unknow camera %.2x\n", event_code);
+                        break;
+                }
+                return;
+                break;
+            case 0x04:
+                break;
+            case 0x05:
+                break;
+            default:
+                break;
+        }
+
+    }
+    
+    return;
+
+}
+
 unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
     libmpq__off_t *size)
 {
@@ -341,27 +501,34 @@ int main(int argc, char **argv)
     MPQSC2 *scr;
     unsigned char *content;
     int64_t size = 0;
-
+    //sc2_events_t *msg;
     
-    if ((scr = libmpq_sc2_init("talk.sc2replay")) == NULL) {
+    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
         printf("Init failed\n");
         return 0;
     }
 
-   /* if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
+    /*if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
 
-    _libmpq_sc2_parse_replay_details(content, size);*/
+    _libmpq_sc2_parse_replay_details(content, size);/*
     
     if ((content = libmpq_sc2_readfile(scr, "replay.message.events", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
 
-    _libmpq_sc2_parse_message_events(content, size);
+    msg = _libmpq_sc2_parse_message_events(content, size);*/
 
+    if ((content = libmpq_sc2_readfile(scr, "replay.game.events", &size)) == NULL) {
+        printf("Failed to read subfile\n");
+        return 0;
+    }
+    
+    _libmpq_sc2_parse_events(content, size);
+    
 	return 1;
 }
 
