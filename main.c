@@ -3,10 +3,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libmpq/mpq.h>
+#include <mpq.h>
 #include "libmpq2.h"
 
 static int spaced = 0;
+sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size, 
+    uint64_t *pos);
 
 #define PRINTTAB(format, var)   for (x = 0; x < spaced; x++) { \
                             printf("\t"); \
@@ -17,6 +19,11 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
 {
     mpq_archive_s *a;
     MPQSC2 *init;
+    uint64_t pos = 0;
+    uint32_t size;
+    unsigned char *content;
+    sc2_data_t *data;
+    sc2_data_array_t *array;
     
     if (libmpq__archive_open(&a, filename, -1) != 0) {
         return NULL;
@@ -25,6 +32,26 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     init = malloc(sizeof(*init));
     
     init->mpq = a;
+    
+    libmpq__archive_read_user_block(init->mpq, &content, &size);
+
+    data = _libmpq_sc2_parse_serialzed_data(content, size, &pos);
+    
+    if (data == NULL) {
+        free(init);
+        /* todo close archive */
+        return NULL;        
+    }
+    
+    array = (sc2_data_array_t *)data->val.ptr;
+    
+    /* TODO : check overflow */
+    init->duration = array[3].ptr->val.integer;
+    data = (sc2_data_t *)array[1].ptr;
+    array = (sc2_data_array_t *)data->val.ptr;
+    
+    init->build = array[4].ptr->val.integer;
+
     
     return init;
     
@@ -64,6 +91,19 @@ int64_t _libmpq_sc2_parse_timestamp(unsigned char *data, uint64_t size,
     return extra+1;
 }
 
+uint32_t _libmpq_sc2_read_uint(unsigned char *data, uint64_t *pos)
+{
+    uint32_t ret;
+    ret = data[*pos] | 
+            data[*pos+1] << 8 | 
+            data[*pos+2] << 16 | 
+            data[*pos+3] << 24;
+    
+    *pos += 4;
+    
+    return ret;
+}
+
 sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
 {
     sc2_data_array_t *array = malloc(sizeof(*array));
@@ -80,10 +120,14 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
     uint64_t *pos)
 {
     #define CHECK_OVERFLOW(add) if (*pos+add > size) return NULL;
-
-    sc2_data_t *new_val = malloc(sizeof(*new_val));
-    
+    sc2_data_t *new_val;
     int x;
+    
+    if (data == NULL) {
+        return NULL;
+    }
+    new_val = malloc(sizeof(*new_val));
+
 
     switch(data[(*pos)++]) {
         case 0x02: /* Byte string */
@@ -320,7 +364,7 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
         
         pos += add;
         iii++;
-        if (iii == 8) return;
+        if (iii == 9) return;
         
         printf("Added : %lld\n", add);
         
@@ -357,8 +401,29 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     case 0x7B:
                     case 0x8B:
                     case 0x9B:
-                        printf("Ability event\n");
+                    {
+                        uint8_t flags = data[pos++];
+                        uint8_t atype = data[pos++];
+                        uint16_t ability;
+                        
+                        if (atype & 0x20) {
+                            printf("Command card\n");
+                        } else if (atype & 0x40) {
+                            printf("Location/move\n");
+                        } else if (atype & 0x80) {
+                            ability = (data[pos] << 8) | data[pos+1];
+                            pos += 2;
+                            _libmpq_sc2_read_uint(data, &pos);
+                            _libmpq_sc2_read_uint(data, &pos);
+                            
+                            pos += 8;
+                            printf("Right click\n");
+                        } else {
+                            printf("Unknown event\n");
+                        }
+                        
                         break;
+                    }
                     case 0x0C:
                     case 0x1C:
                     case 0x2C:
@@ -369,7 +434,7 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     case 0x7C:
                     case 0x8C:
                     case 0x9C:
-                    case 0xAC:
+                    case 0xAC: /* This event is heavily based on phpsc2replay */
                     {
                         uint8_t deselect, prevbyte, bitmask, tmp, byte;
                         uint16_t num_unit_type, i, num_unit;
@@ -379,9 +444,9 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                         deselect = data[pos++];
                         
                         if ((deselect & 0x03) == 1) {
-                        
+                            printf("Unhandled case 0\n");
                         } else if ((deselect & 0x03) == 2 || (deselect & 0x03) == 3) {
-                        
+                            printf("Unhandled case 1\n");
                         } else if ((deselect & 0x03) == 0) {
                             bitmask = 3;
                             tmp = deselect;
@@ -550,11 +615,13 @@ unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
 int main(int argc, char **argv)
 {
     MPQSC2 *scr;
+
     unsigned char *content;
+    int64_t pos = 0;
     int64_t size = 0;
     //sc2_events_t *msg;
     
-    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
+    if ((scr = libmpq_sc2_init("1.3.3.sc2replay")) == NULL) {
         printf("Init failed\n");
         return 0;
     }
@@ -572,12 +639,15 @@ int main(int argc, char **argv)
     }
 
     msg = _libmpq_sc2_parse_message_events(content, size);*/
+    
 
+    return;
+    
     if ((content = libmpq_sc2_readfile(scr, "replay.game.events", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
-    
+
     _libmpq_sc2_parse_events(content, size);
     
 	return 1;

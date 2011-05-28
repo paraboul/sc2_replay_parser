@@ -19,6 +19,9 @@ typedef struct _sc2string {
 typedef struct _mpqsc2
 {
     mpq_archive_s *mpq;
+    char *version;
+    uint32_t build;
+    uint64_t duration;
     
 } MPQSC2;
 
