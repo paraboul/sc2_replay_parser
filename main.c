@@ -17,18 +17,15 @@ uint8_t BITMASKS[9] = {0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF};
                             printf("\t"); \
                         } \
                         printf(format, var)
-                        
+
 unsigned char stream_read_bits(mpq_bitstream *stream, uint8_t bits)
 {
     uint8_t ret;
-    if (stream->shift + bits > 8) {
-        stream->pos += 1; /* TODO check this */
-        printf("pass bit read\n");
-
+    if (stream->shift + bits >= 8) {
+        stream->pos += (stream->shift + bits) / 8; /* TODO check this */
     }
     
     if ((stream->shift = (stream->shift + bits) % 8) == 0) {
-        printf("Realign?\n");
         stream->pos -= 1; /* TODO check this */
         return stream_read(stream);
     }
@@ -417,14 +414,14 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
     int iii = 0;
     unsigned char *data;
     int64_t pos;
-    while (1) {
+    while (stream->pos < stream->length) {
         int64_t ts;
         uint8_t event_type, player_id, event_code;
 
         stream->pos += _libmpq_sc2_parse_timestamp(&stream->data[stream->pos], stream->length - stream->pos, &ts);
 
         iii++;
-        if (iii == 500) return;
+        if (iii == 8000) return;
         
         event_type  = stream->data[stream->pos] >> 5;
         player_id   = stream->data[stream->pos] & 15;
@@ -432,8 +429,8 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
         
         stream_jump(stream, 2);
         
-        printf("==== Event ====\nTimestamp : %lld\nEvent Type : %.2x\nPlayer id : %d\nEvent code : %.2x\n", ts, event_type, player_id, event_code);
-        
+        //printf("==== Event ====\nTimestamp : %lld\nEvent Type : %.2x\nPlayer id : %d\nEvent code : %.2x\n", ts, event_type, player_id, event_code);
+        //printf("(%d) Type %d - Code %x - Start 0 - TS : %lld\n", iii, event_type, event_code, ts);
         switch(event_type) {
             case 0x00:
                 switch(event_code) {
@@ -450,6 +447,9 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                 break;
             case 0x01:
                 switch(event_code) {
+                    case 0x09:
+                        printf("Player leave the game\n");
+                        break;
                     case 0x0D:
                     case 0x1D:
                     case 0x2D:
@@ -465,12 +465,27 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
 
                         action = stream_read_bits(stream, 2);
                         mode = stream_read_bits(stream, 2);
-                        
-                        printf("Hotkey event %x %x\n", action, mode);
-                        if (action != 0 || mode != 0) {
-                            printf("Unhandled hotkey\n");
-                            return;
+
+                        if (mode == 1) {
+                            uint8_t length;
+                            
+                            length = stream_read(stream);
+
+                            stream_read_bits(stream, length);
+
+                        } else if (mode == 2 || mode == 3) {
+                            uint8_t index_length;
+                            int j;
+                            
+                            index_length = stream_read(stream);
+                            
+                            for (j = 0; j < index_length; j++) {
+                                stream_read(stream);
+                            }
+                            //return;
+                            break;     
                         }
+
                         break;                    
                     }
                     case 0x0B:
@@ -502,20 +517,28 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                                 ability = ability << 8 | ability_flags;
                                 
                                 if (ability_flags & 0x10) {
-                                    printf("Command card 0x10\n");
-                                    return;
+                                    stream_jump(stream, 9);
                                 } else if (ability_flags & 0x20) {
-                                    printf("Command card 0x20\n");
-                                    return;
+                                    uint16_t code, object_type;
+                                    uint32_t object_id;
+                                    
+                                    code = stream_read_short(stream);
+                                    
+                                    /* TODO : uint bitshiftet are not handled */
+                                    object_id = _libmpq_sc2_read_uint(stream);
+                                    object_type = stream_read_short(stream);
+                                    
+                                    stream_jump(stream, 10);
+
+
                                 } else {
-                                    printf("Unknow command card ability\n");
+                                    //printf("Unknow command card ability\n");
                                 }
                             }
 
                         } else if (atype & 0x40) {
                             if (flags == 0x08) {
-                                printf("Skip location\n");
-                                stream_jump(stream, 15);
+                                stream_jump(stream, 10);
                             } else {
                                 printf("Unhandled move/location\n");
                                 return;
@@ -527,9 +550,11 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                             object_id = _libmpq_sc2_read_uint(stream);
                             object_type = stream_read_short(stream);
                             
+                            #if 0
                             printf("Ability : %d\n", ability);
                             printf("Object_id : %d\n", object_id);
                             printf("Object type : %d\n", object_type);
+                            #endif
                             stream_jump(stream, 10);
                         } else {
                             printf("Unknown event\n");
@@ -548,7 +573,7 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                     case 0x7C:
                     case 0x8C:
                     case 0x9C:
-                    case 0xAC: /* This event is heavily based on phpsc2replay */
+                    case 0xAC:
                     {
                         uint8_t flag, deselect_flag, unit_type_n, unit_n;
                         int j;
@@ -558,20 +583,23 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                         
                         switch(deselect_flag) {
                             case 0x01:
-                                printf("Unhandled deselect 1\n");
-                                return;
+                            {
+                                uint8_t bits;
+                                
+                                bits = stream_read(stream);
+
+                                stream_read_bits(stream, bits);
+
+
                                 break;
+                            }
                             case 0x02:
-                                printf("Unhandled deselect 2\n");
-                                return;
-                                break;
                             case 0x03:
                             {
                                 uint8_t index_length;
                                 int j;
                                 
                                 index_length = stream_read(stream);
-                                printf("Unhandled deselect 3 : %d\n", index_length);
                                 
                                 for (j = 0; j < index_length; j++) {
                                     stream_read(stream);
@@ -580,12 +608,11 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                                 break;
                             }
                             default:
-                                printf("No deselect\n");
                                 break;
                         }
                         
                         unit_type_n = stream_read(stream);
-                        printf("Unit type n : %d\n", unit_type_n);
+                        //printf("Unit type n : %d\n", unit_type_n);
                         for (j = 0; j < unit_type_n; j++) {
                             #if 1
                             stream_read_short(stream);
@@ -631,7 +658,7 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                     stream_jump(stream, 3);
                     
                     cur = stream_read(stream);
-                    printf("Cur : %.2x\n", cur & 0x70);
+                    //printf("Cur : %.2x\n", cur & 0x70);
                     switch((cur & 0x70)) {
                         case 0x10:
                         case 0x30:
@@ -642,10 +669,10 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                             if ((cur & 0x20) > 0) {
                                 stream_jump(stream, 1);
                                 cur = stream_read(stream);
-                                printf("wut\n");
+                                //printf("wut\n");
                             }
                             if ((cur & 0x40) == 0) break;
-                            printf("then\n");
+                            //printf("then\n");
                         case 0x40:
                             stream_jump(stream, 2);
                             break;
@@ -669,7 +696,8 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
             case 0x04:
                 switch(event_code) {
                     case 0x00:
-                        printf("JUMP\n");
+                        printf("JUMP %d\n", iii);
+                        return;
                         //stream_jump(stream, 10);
                         break;
                     default:
@@ -741,14 +769,16 @@ int main(int argc, char **argv)
         printf("Init failed\n");
         return 0;
     }
-
+    
+    #if 0
     if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
 
-    _libmpq_sc2_parse_replay_details(content, size);/*
-    
+    _libmpq_sc2_parse_replay_details(content, size);
+    #endif
+    /*
     if ((content = libmpq_sc2_readfile(scr, "replay.message.events", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
@@ -761,7 +791,8 @@ int main(int argc, char **argv)
         printf("Failed to read subfile\n");
         return 0;
     }
-    
+
+
     stream.data = content;
     stream.pos = 0;
     stream.length = size;
