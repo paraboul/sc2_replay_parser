@@ -9,11 +9,84 @@
 static int spaced = 0;
 sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size, 
     uint64_t *pos);
+unsigned char stream_read(mpq_bitstream *stream);
+
+uint8_t BITMASKS[9] = {0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF};
 
 #define PRINTTAB(format, var)   for (x = 0; x < spaced; x++) { \
                             printf("\t"); \
                         } \
                         printf(format, var)
+                        
+unsigned char stream_read_bits(mpq_bitstream *stream, uint8_t bits)
+{
+    uint8_t ret;
+    if (stream->shift + bits > 8) {
+        stream->pos += 1; /* TODO check this */
+        printf("pass bit read\n");
+
+    }
+    
+    if ((stream->shift = (stream->shift + bits) % 8) == 0) {
+        printf("Realign?\n");
+        stream->pos -= 1; /* TODO check this */
+        return stream_read(stream);
+    }
+
+    return (uint8_t)(stream->data[stream->pos] << (8 - stream->shift)) >> (8 - bits);
+
+}
+
+unsigned char stream_read(mpq_bitstream *stream)
+{
+    if (stream->pos+1 > stream->length) {
+        printf("Buffer overflowed\n");
+        return '\0';
+    }
+    stream->pos += 1;
+
+    return (stream->shift ? 
+                (uint8_t)(stream->data[stream->pos-1] & ~BITMASKS[stream->shift]) | 
+                (uint8_t)(stream->data[stream->pos] & BITMASKS[stream->shift]) :
+                
+                stream->data[stream->pos - 1]);
+}
+
+
+uint32_t _libmpq_sc2_read_uint(mpq_bitstream *stream)
+{
+    return  stream_read(stream) << 24 |
+            stream_read(stream) << 16 |
+            stream_read(stream) << 8  |
+            stream_read(stream);
+}
+
+uint16_t stream_read_short(mpq_bitstream *stream)
+{
+    if (!stream->shift) {
+        return  stream_read(stream) << 8 |
+                stream_read(stream);
+    } else {
+        uint8_t a, b;
+        stream->pos += 2;
+        
+        a =  (uint8_t)(stream->data[stream->pos-2] & ~BITMASKS[stream->shift]) | 
+             (uint8_t)(stream->data[stream->pos-1] >> (8-stream->shift));
+        b =  ((uint8_t)(stream->data[stream->pos-1] << stream->shift) & ~BITMASKS[stream->shift]) | stream->data[stream->pos] & BITMASKS[stream->shift];
+        
+        return a << 8 | b;
+    }
+}
+
+void stream_jump(mpq_bitstream *stream, uint32_t n)
+{
+    if (stream->pos+n > stream->length) {
+        printf("Buffer overflowed\n");
+        return;
+    }
+    
+    stream->pos += n;
+}
 
 MPQSC2 *libmpq_sc2_init(const char *filename)
 {
@@ -33,7 +106,7 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     
     init->mpq = a;
     
-    libmpq__archive_read_user_block(init->mpq, &content, &size);
+    libmpq__archive_get_user_data(init->mpq, &content, &size);
 
     data = _libmpq_sc2_parse_serialzed_data(content, size, &pos);
     
@@ -91,18 +164,6 @@ int64_t _libmpq_sc2_parse_timestamp(unsigned char *data, uint64_t size,
     return extra+1;
 }
 
-uint32_t _libmpq_sc2_read_uint(unsigned char *data, uint64_t *pos)
-{
-    uint32_t ret;
-    ret = data[*pos] | 
-            data[*pos+1] << 8 | 
-            data[*pos+2] << 16 | 
-            data[*pos+3] << 24;
-    
-    *pos += 4;
-    
-    return ret;
-}
 
 sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
 {
@@ -351,28 +412,25 @@ sc2_events_t *_libmpq_sc2_parse_message_events(unsigned char *data, uint64_t siz
     return events;
 }
 
-void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
+void _libmpq_sc2_parse_events(mpq_bitstream *stream)
 {
-    uint64_t pos = 0;
-    printf("Size : %lld\n", size);
     int iii = 0;
-    while (pos < size) {
+    unsigned char *data;
+    int64_t pos;
+    while (1) {
         int64_t ts;
         uint8_t event_type, player_id, event_code;
-        uint64_t add;
-        add = _libmpq_sc2_parse_timestamp(&data[pos], size, &ts);
-        
-        pos += add;
+
+        stream->pos += _libmpq_sc2_parse_timestamp(&stream->data[stream->pos], stream->length - stream->pos, &ts);
+
         iii++;
-        if (iii == 9) return;
+        if (iii == 500) return;
         
-        printf("Added : %lld\n", add);
+        event_type  = stream->data[stream->pos] >> 5;
+        player_id   = stream->data[stream->pos] & 15;
+        event_code  = stream->data[stream->pos+1];
         
-        event_type  = data[pos] >> 5;
-        player_id   = data[pos] & 15;
-        event_code  = data[++pos];
-        
-        pos++;
+        stream_jump(stream, 2);
         
         printf("==== Event ====\nTimestamp : %lld\nEvent Type : %.2x\nPlayer id : %d\nEvent code : %.2x\n", ts, event_type, player_id, event_code);
         
@@ -388,9 +446,33 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     default:
                         break;
                 }
+
                 break;
             case 0x01:
                 switch(event_code) {
+                    case 0x0D:
+                    case 0x1D:
+                    case 0x2D:
+                    case 0x3D:
+                    case 0x4D:
+                    case 0x5D:
+                    case 0x6D:
+                    case 0x7D:
+                    case 0x8D:
+                    case 0x9D:
+                    {
+                        uint8_t action, mode;
+
+                        action = stream_read_bits(stream, 2);
+                        mode = stream_read_bits(stream, 2);
+                        
+                        printf("Hotkey event %x %x\n", action, mode);
+                        if (action != 0 || mode != 0) {
+                            printf("Unhandled hotkey\n");
+                            return;
+                        }
+                        break;                    
+                    }
                     case 0x0B:
                     case 0x1B:
                     case 0x2B:
@@ -402,24 +484,56 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     case 0x8B:
                     case 0x9B:
                     {
-                        uint8_t flags = data[pos++];
-                        uint8_t atype = data[pos++];
-                        uint16_t ability;
+                        uint8_t flags = stream_read(stream);
+                        uint8_t atype = stream_read(stream);
+                        uint32_t ability;                        
                         
                         if (atype & 0x20) {
-                            printf("Command card\n");
-                        } else if (atype & 0x40) {
-                            printf("Location/move\n");
-                        } else if (atype & 0x80) {
-                            ability = (data[pos] << 8) | data[pos+1];
-                            pos += 2;
-                            _libmpq_sc2_read_uint(data, &pos);
-                            _libmpq_sc2_read_uint(data, &pos);
+                            uint32_t object_id;
+                            ability = stream_read(stream) << 8 | stream_read(stream);
+
+                            if (flags == 0x29 || flags == 0x19 || flags == 0x14) {
                             
-                            pos += 8;
-                            printf("Right click\n");
+                            } else {
+                                uint8_t ability_flags;
+                                
+                                ability_flags = stream_read_bits(stream, 6);
+
+                                ability = ability << 8 | ability_flags;
+                                
+                                if (ability_flags & 0x10) {
+                                    printf("Command card 0x10\n");
+                                    return;
+                                } else if (ability_flags & 0x20) {
+                                    printf("Command card 0x20\n");
+                                    return;
+                                } else {
+                                    printf("Unknow command card ability\n");
+                                }
+                            }
+
+                        } else if (atype & 0x40) {
+                            if (flags == 0x08) {
+                                printf("Skip location\n");
+                                stream_jump(stream, 15);
+                            } else {
+                                printf("Unhandled move/location\n");
+                                return;
+                            }
+                        } else if (atype & 0x80) {
+                            uint32_t object_id, object_type;
+                            ability = (stream_read(stream) << 8) | stream_read(stream);
+                            
+                            object_id = _libmpq_sc2_read_uint(stream);
+                            object_type = stream_read_short(stream);
+                            
+                            printf("Ability : %d\n", ability);
+                            printf("Object_id : %d\n", object_id);
+                            printf("Object type : %d\n", object_type);
+                            stream_jump(stream, 10);
                         } else {
                             printf("Unknown event\n");
+                            return;
                         }
                         
                         break;
@@ -436,122 +550,104 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                     case 0x9C:
                     case 0xAC: /* This event is heavily based on phpsc2replay */
                     {
-                        uint8_t deselect, prevbyte, bitmask, tmp, byte;
-                        uint16_t num_unit_type, i, num_unit;
+                        uint8_t flag, deselect_flag, unit_type_n, unit_n;
                         int j;
                         
-                        pos++; /* event flag */
-                        deselect = data[pos++];
+                        flag = stream_read(stream);
+                        deselect_flag = stream_read_bits(stream, 2);
                         
-                        if ((deselect & 0x03) == 1) {
-                            printf("Unhandled case 0\n");
-                        } else if ((deselect & 0x03) == 2 || (deselect & 0x03) == 3) {
-                            printf("Unhandled case 1\n");
-                        } else if ((deselect & 0x03) == 0) {
-                            bitmask = 3;
-                            tmp = deselect;
+                        switch(deselect_flag) {
+                            case 0x01:
+                                printf("Unhandled deselect 1\n");
+                                return;
+                                break;
+                            case 0x02:
+                                printf("Unhandled deselect 2\n");
+                                return;
+                                break;
+                            case 0x03:
+                            {
+                                uint8_t index_length;
+                                int j;
+                                
+                                index_length = stream_read(stream);
+                                printf("Unhandled deselect 3 : %d\n", index_length);
+                                
+                                for (j = 0; j < index_length; j++) {
+                                    stream_read(stream);
+                                }
+                                
+                                break;
+                            }
+                            default:
+                                printf("No deselect\n");
+                                break;
                         }
                         
-                        prevbyte = tmp;
-                        
-                        tmp = data[pos++];
-                        
-                        if (bitmask > 0) {
-                            num_unit_type = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
-                        } else {
-                            num_unit_type = tmp;
+                        unit_type_n = stream_read(stream);
+                        printf("Unit type n : %d\n", unit_type_n);
+                        for (j = 0; j < unit_type_n; j++) {
+                            #if 1
+                            stream_read_short(stream);
+                            stream_read(stream);
+                            stream_read(stream);
+                            #endif
+                            #if 0
+                            printf("uID : %d\n", (stream_read_short(stream) << 8) | stream_read(stream));
+                            printf("Count : %d\n", stream_read(stream));
+                            #endif
                         }
                         
-                        printf("Select Unit : %d\n", num_unit_type);
+                        unit_n = stream_read(stream);
                         
-                        for (i = 0; i < num_unit_type; i++) {
-                            int unit_type_id = 0, unit_type_count = 0;
+                        for (j = 0; j < unit_n; j++) {
+                            #if 1
+                            stream_read_short(stream);
+                            stream_read_short(stream);
+                            #endif
+                            #if 0
+                            printf("Recyled : %d\n", stream_read_short(stream));
+                            printf("Counter : %d\n", stream_read_short(stream));
+                            #endif
+                        }
 
-                            for (j = 0; j < 3; j++) {
-                                prevbyte = tmp;
-                                tmp = data[pos++];
-                                if (bitmask > 0) {
-                                    byte = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
-                                } else {
-                                    byte = tmp;
-                                }
-                                unit_type_id = byte << ((2 - j) * 8) | unit_type_id; 
-                                
-                                
-                            }
-                            prevbyte = tmp;
-                            tmp = data[pos++];
-                            if (bitmask > 0) {
-                                unit_type_count = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
-                            } else {
-                                unit_type_count = tmp;
-                            }
-                            printf("Type : %d\n", unit_type_id);
-                            printf("Count : %d\n", unit_type_count);
-                            
-                        }
-                        prevbyte = tmp;
-                        tmp = data[pos++];
-                        
-                        if (bitmask > 0) {
-                            num_unit = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
-                        } else {
-                            num_unit = tmp;
-                        }
-                        
-                        printf("Num : %d\n", num_unit);
-                        for (i = 0; i < num_unit; i++) {
-                            int unit_id = 0;
-                            
-                            for (j = 0; j < 4; j++) {
-                                prevbyte = tmp;
-                                tmp = data[pos++];
-                                
-                                if (bitmask > 0) {
-                                    byte = (prevbyte & (0xFF - bitmask)) | (tmp & bitmask);
-                                } else {
-                                    byte = tmp;
-                                }
-                                if (j < 2) {
-                                    unit_id = (byte << ((1 - j) * 8)) | unit_id;
-                                }
-                            }
-                            printf("Unit id : %d\n", unit_id);
-                        }
-                        
                         break;
                     }
                     default:
+                        printf("UNHANDLED\n");
+                        return;
                         break;
                 }
                 
                 break;
             case 0x02:
+                printf("Event 0x02\n");
+                return;
                 break;
             case 0x03:
                 if ((event_code & 0x0F) == 0x01) {
                     uint8_t cur;
 
-                    pos += 3;
+                    stream_jump(stream, 3);
                     
-                    cur = data[pos++];
+                    cur = stream_read(stream);
                     printf("Cur : %.2x\n", cur & 0x70);
                     switch((cur & 0x70)) {
                         case 0x10:
                         case 0x30:
                         case 0x50:
-                            pos++;
-                            cur = data[pos++];
+                            stream_jump(stream, 1);
+                            cur = stream_read(stream);
                         case 0x20:
                             if ((cur & 0x20) > 0) {
-                                pos++;
-                                cur = data[pos++];
+                                stream_jump(stream, 1);
+                                cur = stream_read(stream);
                                 printf("wut\n");
                             }
                             if ((cur & 0x40) == 0) break;
                             printf("then\n");
                         case 0x40:
-                            pos += 2;
+                            stream_jump(stream, 2);
                             break;
                         default:
                             break;
@@ -561,8 +657,8 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                 }
                 switch(event_code) {
                     case 0x08:
-                        printf("there %.2x\n\n\n\n", data[++pos]);
-                        
+                        //printf("there %.2x\n\n\n\n", data[++pos]);
+                        stream_jump(stream, 1);
                         break;
                     default:
                         printf("Unknow camera %.2x\n", event_code);
@@ -571,12 +667,32 @@ void _libmpq_sc2_parse_events(unsigned char *data, uint64_t size)
                 return;
                 break;
             case 0x04:
+                switch(event_code) {
+                    case 0x00:
+                        printf("JUMP\n");
+                        //stream_jump(stream, 10);
+                        break;
+                    default:
+                        printf("Event 0x04 %x\n", event_code);
+                        return;
+                        break;
+                }
+
                 break;
             case 0x05:
+                printf("Event 0x05\n");
+                return;
                 break;
             default:
+                printf("Failed\n");
+                return;
                 break;
         }
+        if (stream->shift != 0) {
+            stream->shift = 0;
+            stream->pos += 1;
+        }
+        
 
     }
     
@@ -615,18 +731,18 @@ unsigned char *libmpq_sc2_readfile(MPQSC2 *scr, const char *filename,
 int main(int argc, char **argv)
 {
     MPQSC2 *scr;
-
+    mpq_bitstream stream;
     unsigned char *content;
     int64_t pos = 0;
     int64_t size = 0;
     //sc2_events_t *msg;
     
-    if ((scr = libmpq_sc2_init("1.3.3.sc2replay")) == NULL) {
+    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
         printf("Init failed\n");
         return 0;
     }
 
-    /*if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
+    if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
@@ -639,16 +755,19 @@ int main(int argc, char **argv)
     }
 
     msg = _libmpq_sc2_parse_message_events(content, size);*/
-    
 
-    return;
-    
+
     if ((content = libmpq_sc2_readfile(scr, "replay.game.events", &size)) == NULL) {
         printf("Failed to read subfile\n");
         return 0;
     }
+    
+    stream.data = content;
+    stream.pos = 0;
+    stream.length = size;
+    stream.shift = 0;
 
-    _libmpq_sc2_parse_events(content, size);
+    _libmpq_sc2_parse_events(&stream);
     
 	return 1;
 }

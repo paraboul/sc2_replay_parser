@@ -16,6 +16,15 @@ typedef struct _sc2string {
 } sc2string;
 
 
+typedef struct _mpqstream {
+    unsigned char *data;
+    int32_t length;
+    
+    int32_t pos;
+    
+    uint8_t shift;
+} mpq_bitstream;
+
 typedef struct _mpqsc2
 {
     mpq_archive_s *mpq;
