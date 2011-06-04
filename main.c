@@ -5,6 +5,7 @@
 #include <string.h>
 #include <mpq.h>
 #include "libmpq2.h"
+#include <glob.h>
 
 static int spaced = 0;
 sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size, 
@@ -13,10 +14,15 @@ unsigned char stream_read(mpq_bitstream *stream);
 
 uint8_t BITMASKS[9] = {0x00, 0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF};
 
+#if 0
 #define PRINTTAB(format, var)   for (x = 0; x < spaced; x++) { \
                             printf("\t"); \
                         } \
                         printf(format, var)
+#endif
+#if 1
+#define PRINTTAB(format, var)
+#endif
 
 unsigned char stream_read_bits(mpq_bitstream *stream, uint8_t bits)
 {
@@ -96,6 +102,7 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     sc2_data_array_t *array;
     
     if (libmpq__archive_open(&a, filename, -1) != 0) {
+        printf("No open\n");
         return NULL;
     }
     
@@ -110,19 +117,19 @@ MPQSC2 *libmpq_sc2_init(const char *filename)
     if (data == NULL) {
         free(init);
         /* todo close archive */
+        printf("No data\n");
         return NULL;        
     }
     
     array = (sc2_data_array_t *)data->val.ptr;
     
     /* TODO : check overflow */
-    init->duration = array[3].ptr->val.integer;
-    data = (sc2_data_t *)array[1].ptr;
+    init->duration = array->ptr[3]->val.integer;
+    data = (sc2_data_t *)array->ptr[1];
     array = (sc2_data_array_t *)data->val.ptr;
     
-    init->build = array[4].ptr->val.integer;
+    init->build = array->ptr[4]->val.integer;
 
-    
     return init;
     
 }
@@ -165,9 +172,8 @@ int64_t _libmpq_sc2_parse_timestamp(unsigned char *data, uint64_t size,
 sc2_data_array_t *_libmpq_sc2_init_data_array(uint32_t size)
 {
     sc2_data_array_t *array = malloc(sizeof(*array));
-    sc2_data_t *sc2_data = malloc(sizeof(sc2_data_t) * size);
-    
-    array->ptr       = sc2_data;
+
+    array->ptr       = malloc(sizeof(sc2_data_t *) * size);
     array->length    = size;
     array->pos       = 0;
     
@@ -241,7 +247,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
                                 size, pos)) == NULL) {
                     return NULL;
                 }
-                new_array[new_array->pos++].ptr = ret;                
+                new_array->ptr[new_array->pos++] = ret;                
             }
             spaced--;
             
@@ -282,7 +288,7 @@ sc2_data_t *_libmpq_sc2_parse_serialzed_data(unsigned char *data, uint64_t size,
                     return NULL;
                 }
                 
-                new_array[new_array->pos++].ptr = ret;
+                new_array->ptr[new_array->pos++] = ret;
                 
             }
             spaced--;
@@ -409,7 +415,7 @@ sc2_events_t *_libmpq_sc2_parse_message_events(unsigned char *data, uint64_t siz
     return events;
 }
 
-void _libmpq_sc2_parse_events(mpq_bitstream *stream)
+void _libmpq_sc2_parse_events(mpq_bitstream *stream, int build)
 {
     int iii = 0;
     unsigned char *data;
@@ -419,10 +425,8 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
         uint8_t event_type, player_id, event_code;
 
         stream->pos += _libmpq_sc2_parse_timestamp(&stream->data[stream->pos], stream->length - stream->pos, &ts);
-
         iii++;
-        if (iii == 8000) return;
-        
+
         event_type  = stream->data[stream->pos] >> 5;
         player_id   = stream->data[stream->pos] & 15;
         event_code  = stream->data[stream->pos+1];
@@ -501,66 +505,99 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
                     {
                         uint8_t flags = stream_read(stream);
                         uint8_t atype = stream_read(stream);
-                        uint32_t ability;                        
+                        uint32_t ability;
                         
-                        if (atype & 0x20) {
-                            uint32_t object_id;
-                            ability = stream_read(stream) << 8 | stream_read(stream);
+                        if (build >= 18574) {
+                            if (atype & 0x20) {
+                                printf("Unhandled 0x20\n");
+                                return;
+                            } else if (atype & 0x40) {
+                                uint8_t hinge;
 
-                            if (flags == 0x29 || flags == 0x19 || flags == 0x14) {
-                            
-                            } else {
-                                uint8_t ability_flags;
+                                stream_jump(stream, 2);
                                 
-                                ability_flags = stream_read_bits(stream, 6);
-
-                                ability = ability << 8 | ability_flags;
+                                hinge = stream_read(stream);
                                 
-                                if (ability_flags & 0x10) {
+                                if (hinge & 0x20) {
                                     stream_jump(stream, 9);
-                                } else if (ability_flags & 0x20) {
-                                    uint16_t code, object_type;
-                                    uint32_t object_id;
-                                    
-                                    code = stream_read_short(stream);
-                                    
-                                    /* TODO : uint bitshiftet are not handled */
-                                    object_id = _libmpq_sc2_read_uint(stream);
-                                    object_type = stream_read_short(stream);
-                                    
-                                    stream_jump(stream, 10);
-
-
+                                } else if (hinge & 0x40) {
+                                    stream_jump(stream, 18);
                                 } else {
-                                    //printf("Unknow command card ability\n");
+                                    break;
                                 }
+                        
+                            } else if (atype & 0x80) {
+                                uint32_t object_id, object_type;
+                                ability = (stream_read(stream) << 8) | stream_read(stream);
+                                
+                                object_id = _libmpq_sc2_read_uint(stream);
+                                object_type = stream_read_short(stream);
+                                
+                                stream_jump(stream, 10);                  
+                            } else if (atype < 0x10) {
+                                stream_jump(stream, 10);
+                        
                             }
+                        } else {
+                        
+                            if (atype & 0x20) {
+                                uint32_t object_id;
+                                ability = stream_read(stream) << 8 | stream_read(stream);
 
-                        } else if (atype & 0x40) {
-                            if (flags == 0x08) {
+                                if (flags == 0x29 || flags == 0x19 || flags == 0x14) {
+                                
+                                } else {
+                                    uint8_t ability_flags;
+                                    
+                                    ability_flags = stream_read_bits(stream, 6);
+
+                                    ability = ability << 8 | ability_flags;
+                                    
+                                    if (ability_flags & 0x10) {
+                                        stream_jump(stream, 9);
+                                    } else if (ability_flags & 0x20) {
+                                        uint16_t code, object_type;
+                                        uint32_t object_id;
+                                        
+                                        code = stream_read_short(stream);
+                                        
+                                        /* TODO : uint bitshiftet are not handled */
+                                        object_id = _libmpq_sc2_read_uint(stream);
+                                        object_type = stream_read_short(stream);
+                                        
+                                        stream_jump(stream, 10);
+
+
+                                    } else {
+                                        //printf("Unknow command card ability\n");
+                                    }
+                                }
+
+                            } else if (atype & 0x40) {
+                                if (flags == 0x08) {
+                                    stream_jump(stream, 10);
+                                } else {
+                                    printf("Unhandled move/location %x\n", atype);
+                                    return;
+                                }
+                            } else if (atype & 0x80) {
+                                uint32_t object_id, object_type;
+                                ability = (stream_read(stream) << 8) | stream_read(stream);
+                                
+                                object_id = _libmpq_sc2_read_uint(stream);
+                                object_type = stream_read_short(stream);
+                                
+                                #if 0
+                                printf("Ability : %d\n", ability);
+                                printf("Object_id : %d\n", object_id);
+                                printf("Object type : %d\n", object_type);
+                                #endif
                                 stream_jump(stream, 10);
                             } else {
-                                printf("Unhandled move/location\n");
+                                printf("Unknown event\n");
                                 return;
                             }
-                        } else if (atype & 0x80) {
-                            uint32_t object_id, object_type;
-                            ability = (stream_read(stream) << 8) | stream_read(stream);
-                            
-                            object_id = _libmpq_sc2_read_uint(stream);
-                            object_type = stream_read_short(stream);
-                            
-                            #if 0
-                            printf("Ability : %d\n", ability);
-                            printf("Object_id : %d\n", object_id);
-                            printf("Object type : %d\n", object_type);
-                            #endif
-                            stream_jump(stream, 10);
-                        } else {
-                            printf("Unknown event\n");
-                            return;
                         }
-                        
                         break;
                     }
                     case 0x0C:
@@ -724,6 +761,8 @@ void _libmpq_sc2_parse_events(mpq_bitstream *stream)
 
     }
     
+    printf("Finished with %d events\n", iii);
+    
     return;
 
 }
@@ -763,42 +802,53 @@ int main(int argc, char **argv)
     unsigned char *content;
     int64_t pos = 0;
     int64_t size = 0;
+    int i;
     //sc2_events_t *msg;
     
-    if ((scr = libmpq_sc2_init("meta.SC2Replay")) == NULL) {
-        printf("Init failed\n");
-        return 0;
+	glob_t globbuf;
+	glob("./replays/*.sc2replay", 0, NULL, &globbuf);
+
+	for (i = 0; i < globbuf.gl_pathc; i++) {
+	    printf("File : %s\n", globbuf.gl_pathv[i]);
+
+        if ((scr = libmpq_sc2_init(globbuf.gl_pathv[i])) == NULL) {
+            printf("Init failed\n");
+            continue;
+        }
+        
+        #if 0
+        if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
+            printf("Failed to read subfile\n");
+            return 0;
+        }
+
+        _libmpq_sc2_parse_replay_details(content, size);
+        #endif
+        /*
+        if ((content = libmpq_sc2_readfile(scr, "replay.message.events", &size)) == NULL) {
+            printf("Failed to read subfile\n");
+            return 0;
+        }
+
+        msg = _libmpq_sc2_parse_message_events(content, size);*/
+
+
+        if ((content = libmpq_sc2_readfile(scr, "replay.game.events", &size)) == NULL) {
+            printf("Failed to read subfile\n");
+            return 0;
+        }
+
+
+        stream.data = content;
+        stream.pos = 0;
+        stream.length = size;
+        stream.shift = 0;
+        
+        printf("Start...\n");
+        _libmpq_sc2_parse_events(&stream, scr->build);
+
+
     }
-    
-    #if 0
-    if ((content = libmpq_sc2_readfile(scr, "replay.details", &size)) == NULL) {
-        printf("Failed to read subfile\n");
-        return 0;
-    }
-
-    _libmpq_sc2_parse_replay_details(content, size);
-    #endif
-    /*
-    if ((content = libmpq_sc2_readfile(scr, "replay.message.events", &size)) == NULL) {
-        printf("Failed to read subfile\n");
-        return 0;
-    }
-
-    msg = _libmpq_sc2_parse_message_events(content, size);*/
-
-
-    if ((content = libmpq_sc2_readfile(scr, "replay.game.events", &size)) == NULL) {
-        printf("Failed to read subfile\n");
-        return 0;
-    }
-
-
-    stream.data = content;
-    stream.pos = 0;
-    stream.length = size;
-    stream.shift = 0;
-
-    _libmpq_sc2_parse_events(&stream);
     
 	return 1;
 }

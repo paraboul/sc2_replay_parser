@@ -73,7 +73,7 @@ typedef struct _sc2_data_array
 {
     uint32_t length;
     uint32_t pos;
-    sc2_data_t *ptr;
+    sc2_data_t **ptr;
     
 } sc2_data_array_t;
 
